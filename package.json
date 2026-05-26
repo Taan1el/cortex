@@ -1,0 +1,29 @@
+﻿{
+    "name":  "cortex",
+    "version":  "0.1.0",
+    "description":  "A local AI side panel for Obsidian notes.",
+    "main":  "main.js",
+    "scripts":  {
+                    "dev":  "node esbuild.config.mjs",
+                    "build":  "tsc --noEmit --skipLibCheck \u0026\u0026 node esbuild.config.mjs production"
+                },
+    "keywords":  [
+                     "obsidian",
+                     "obsidian-plugin",
+                     "ai",
+                     "ai-workspace",
+                     "acp",
+                     "chatgpt"
+                 ],
+    "author":  "Taan1el",
+    "license":  "MIT",
+    "devDependencies":  {
+                            "@types/node":  "^20.0.0",
+                            "esbuild":  "^0.25.0",
+                            "obsidian":  "latest",
+                            "typescript":  "^5.8.0"
+                        },
+    "dependencies":  {
+                         "@agentclientprotocol/sdk":  "latest"
+                     }
+}
