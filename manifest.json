@@ -1,6 +1,6 @@
 ﻿{
-    "id":  "cortex",
-    "name":  "Cortex",
+    "id":  "cortex-local",
+    "name":  "Cortex Local",
     "version":  "0.1.0",
     "minAppVersion":  "1.4.0",
     "description":  "A local AI side panel for Obsidian notes. Chat, improve notes, use saved prompts, and import ChatGPT history.",

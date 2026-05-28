@@ -15,8 +15,8 @@ export default class CortexPlugin extends Plugin {
 
 		this.registerView(CORTEX_VIEW, (leaf) => new CortexView(leaf, this));
 
-		this.addRibbonIcon("brain", "Open Cortex", () => void this.openPanel());
-		this.addCommand({ id: "open", name: "Open Cortex", callback: () => void this.openPanel() });
+		this.addRibbonIcon("brain", "Open Cortex Local", () => void this.openPanel());
+		this.addCommand({ id: "open", name: "Open Cortex Local", callback: () => void this.openPanel() });
 		this.addCommand({ id: "start", name: "Start the assistant", callback: () => void this.engine.start(this.activeProfile()) });
 		this.addCommand({ id: "stop", name: "Stop the assistant", callback: () => void this.engine.stop() });
 		this.addCommand({ id: "cancel", name: "Stop the current reply", callback: () => void this.engine.cancel() });

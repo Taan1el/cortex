@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`cortex` is an Obsidian plugin for an AI workspace inside a local vault. It connects to agent profiles, reads/writes vault files through Obsidian APIs, and includes ChatGPT export import support.
+`cortex-local` is an Obsidian plugin for an AI workspace inside a local vault. It connects to agent profiles, reads/writes vault files through Obsidian APIs, and includes ChatGPT export import support.
 
 ## Stack
 
@@ -39,4 +39,4 @@ npm audit --audit-level=moderate
 
 - Run `npm run build` after TypeScript or UI changes.
 - Run `npm audit --audit-level=moderate` for dependency changes.
-- Check installed plugin output under `<vault>/.obsidian/plugins/cortex` only as deployment output, not source of truth.
+- Check installed plugin output under `<vault>/.obsidian/plugins/cortex-local` only as deployment output, not source of truth.
