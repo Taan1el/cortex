@@ -2,28 +2,17 @@ import { Buffer } from "node:buffer";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
-import { App, MarkdownView, requestUrl } from "obsidian";
+import { App, MarkdownView } from "obsidian";
 import * as acp from "@agentclientprotocol/sdk";
 
 import type { ConnectionStatus, EngineState, PanelItem, ToolStatus } from "../types";
 import type { AgentProfile, CortexSettings } from "../settings";
 import { VaultFiles } from "../vault/files";
+import type { VaultIndex } from "../vault/rag";
+import { createChatProvider } from "../providers";
+import type { ChatMessage, ChatProvider } from "../providers/types";
 
 type Listener = () => void;
-type OllamaRole = "system" | "user" | "assistant";
-
-interface OllamaMessage {
-	role: OllamaRole;
-	content: string;
-}
-
-interface OllamaChatResponse {
-	message?: {
-		role?: string;
-		content?: string;
-	};
-	error?: string;
-}
 
 export class CortexEngine {
 	private status: ConnectionStatus = { kind: "idle" };
@@ -36,13 +25,15 @@ export class CortexEngine {
 	private sessionId: string | null = null;
 	private firstTurn = true;
 	private activeProfile: AgentProfile | null = null;
+	private chatProvider: ChatProvider | null = null;
+	private abort: AbortController | null = null;
 
 	private readonly asks = new Map<string, (r: acp.RequestPermissionResponse) => void>();
 	private readonly localAsks = new Map<string, (optionId: string) => void>();
 	private readonly listeners = new Set<Listener>();
 	private readonly files: VaultFiles;
 
-	constructor(private app: App, private getSettings: () => CortexSettings) {
+	constructor(private app: App, private getSettings: () => CortexSettings, private index: VaultIndex) {
 		this.files = new VaultFiles(app);
 	}
 
@@ -66,11 +57,11 @@ export class CortexEngine {
 		this.emit();
 
 		try {
-			if ((profile.provider ?? "acp") === "ollama") {
-				await this.startOllama(profile);
-				return;
+			if ((profile.provider ?? "acp") === "acp") {
+				await this.startAcp(profile);
+			} else {
+				await this.startChat(profile);
 			}
-			await this.startAcp(profile);
 		} catch (err) {
 			this.status = { kind: "error", message: (err as Error).message };
 			this.emit();
@@ -116,12 +107,12 @@ export class CortexEngine {
 		this.emit();
 	}
 
-	private async startOllama(profile: AgentProfile): Promise<void> {
-		const baseUrl = cleanBaseUrl(profile.ollamaBaseUrl);
-		const model = profile.ollamaModel?.trim() || "llama3.2:latest";
-		await requestUrl({ url: `${baseUrl}/api/tags`, method: "GET" });
-		this.sessionId = `ollama-${rid()}`;
-		this.model = `ollama:${model}`;
+	private async startChat(profile: AgentProfile): Promise<void> {
+		const provider = createChatProvider(profile, this.getSettings());
+		await provider.ready();
+		this.chatProvider = provider;
+		this.sessionId = `chat-${rid()}`;
+		this.model = provider.model;
 		this.firstTurn = true;
 		this.status = { kind: "ready", sessionId: this.sessionId };
 		this.emit();
@@ -137,6 +128,9 @@ export class CortexEngine {
 		this.asks.clear();
 		for (const resolve of this.localAsks.values()) resolve("deny");
 		this.localAsks.clear();
+		this.abort?.abort();
+		this.abort = null;
+		this.chatProvider = null;
 		this.proc = null;
 		this.conn = null;
 		this.sessionId = null;
@@ -152,8 +146,8 @@ export class CortexEngine {
 			throw new Error("Cortex is not connected to an agent yet.");
 		}
 		const profile = this.activeProfile;
-		if (profile && (profile.provider ?? "acp") === "ollama") {
-			await this.sendOllama(text, profile);
+		if (profile && (profile.provider ?? "acp") !== "acp") {
+			await this.sendChat(text);
 			return;
 		}
 		await this.sendAcp(text);
@@ -187,60 +181,69 @@ export class CortexEngine {
 		}
 	}
 
-	private async sendOllama(text: string, profile: AgentProfile): Promise<void> {
+	private async sendChat(text: string): Promise<void> {
+		const provider = this.chatProvider;
+		if (!provider) throw new Error("Cortex is not connected to a provider yet.");
 		const settings = this.getSettings();
 		this.items.push({ kind: "message", id: rid(), from: "user", text });
 		this.busy = true;
 		this.emit();
 
 		const context = await this.buildContext(settings);
+		this.abort = new AbortController();
 		try {
 			if (isEditCurrentNoteRequest(text)) {
-				await this.runOllamaNoteEdit(text, profile);
+				await this.runChatNoteEdit(text, provider);
 				return;
 			}
-			const answer = await this.askOllama(profile, [
-				system("You are Cortex, a local Obsidian assistant. Answer simply and directly. Keep replies short unless the user asks for detail."),
-				user([
-					"User request:",
-					text,
-					"",
-					"Vault context:",
-					context ?? "No extra context.",
-				].join("\n")),
-			]);
-			this.items.push({ kind: "message", id: rid(), from: "assistant", text: answer });
+			const retrieved = await this.retrieveVaultContext(text, settings);
+			const contextParts = [context ?? "No extra context."];
+			if (retrieved) contextParts.push("", retrieved);
+			const messages: ChatMessage[] = [
+				{ role: "system", content: "You are Cortex, a local Obsidian assistant. Answer simply and directly. Keep replies short unless the user asks for detail. When relevant vault notes are provided, ground your answer in them and cite note paths." },
+				{ role: "user", content: ["User request:", text, "", "Vault context:", ...contextParts].join("\n") },
+			];
+			await provider.stream(messages, { signal: this.abort.signal, effort: settings.effort }, (delta) => {
+				this.appendChunk("assistant", { type: "text", text: delta });
+				this.emit();
+			});
 		} catch (err) {
-			this.items.push({ kind: "message", id: rid(), from: "assistant", text: ollamaError(err) });
+			if (!isAbort(err)) this.items.push({ kind: "message", id: rid(), from: "assistant", text: chatError(err) });
 		} finally {
+			this.abort = null;
 			this.busy = false;
 			this.emit();
 		}
 	}
 
-	private async runOllamaNoteEdit(text: string, profile: AgentProfile): Promise<void> {
+	private async runChatNoteEdit(text: string, provider: ChatProvider): Promise<void> {
 		const file = this.app.workspace.getActiveFile();
 		if (!file) {
 			this.items.push({ kind: "message", id: rid(), from: "assistant", text: "Open a note first, then ask me to improve or rewrite it." });
 			return;
 		}
 		const original = await this.app.vault.cachedRead(file);
-		const revisedRaw = await this.askOllama(profile, [
-			system("You are Cortex, a local Obsidian note editor. Rewrite the active note according to the user request. Preserve meaning, frontmatter, headings, links, tags, and facts. Output only the complete revised Markdown note. No explanation."),
-			user([
-				"User request:",
-				text,
-				"",
-				`Current file: ${file.path}`,
-				"",
-				"Current note:",
-				"```markdown",
-				original,
-				"```",
-				"",
-				"Return only the full revised Markdown note.",
-			].join("\n")),
-		]);
+		const messages: ChatMessage[] = [
+			{ role: "system", content: "You are Cortex, a local Obsidian note editor. Rewrite the active note according to the user request. Preserve meaning, frontmatter, headings, links, tags, and facts. Output only the complete revised Markdown note. No explanation." },
+			{
+				role: "user",
+				content: [
+					"User request:",
+					text,
+					"",
+					`Current file: ${file.path}`,
+					"",
+					"Current note:",
+					"```markdown",
+					original,
+					"```",
+					"",
+					"Return only the full revised Markdown note.",
+				].join("\n"),
+			},
+		];
+		const signal = this.abort?.signal ?? new AbortController().signal;
+		const revisedRaw = await provider.stream(messages, { signal, effort: this.getSettings().effort }, () => undefined);
 		const revised = cleanRevisedMarkdown(revisedRaw);
 		if (!revised.trim() || revised.trim() === original.trim()) {
 			this.items.push({ kind: "message", id: rid(), from: "assistant", text: "I could not produce a useful edit. I left the note unchanged." });
@@ -254,6 +257,41 @@ export class CortexEngine {
 		}
 		await this.files.writeWithNotice(file.path, revised);
 		this.items.push({ kind: "message", id: rid(), from: "assistant", text: `Updated ${file.path}` });
+	}
+
+	/** Semantic-search the vault and format the top hits as a context block. */
+	private async retrieveVaultContext(query: string, settings: CortexSettings): Promise<string | null> {
+		if (!settings.ragUseInChat || !this.index.status.ready) return null;
+		const signal = this.abort?.signal ?? new AbortController().signal;
+		const tool: Extract<PanelItem, { kind: "tool" }> = {
+			kind: "tool",
+			id: rid(),
+			callId: rid(),
+			title: "Searching vault",
+			status: "running",
+			locations: [],
+		};
+		this.items.push(tool);
+		this.emit();
+		try {
+			const hits = await this.index.search(query, settings.ragTopK, signal);
+			tool.status = "done";
+			tool.title = `Searched vault · ${hits.length} matches`;
+			tool.locations = [...new Set(hits.map((h) => h.path))];
+			this.emit();
+			if (hits.length === 0) return null;
+			const lines = ["Relevant notes from the vault (retrieved by semantic search):"];
+			for (const hit of hits) {
+				const where = hit.heading ? `${hit.path} › ${hit.heading}` : hit.path;
+				lines.push("", `[[${hit.path}]] (${where}, score ${hit.score.toFixed(2)}):`, hit.text);
+			}
+			return lines.join("\n");
+		} catch (err) {
+			tool.status = "failed";
+			tool.title = `Vault search failed: ${(err as Error).message}`;
+			this.emit();
+			return null;
+		}
 	}
 
 	private requestLocalWriteApproval(path: string, preview?: string, title = "Apply this edit to the current note?"): Promise<string> {
@@ -275,21 +313,14 @@ export class CortexEngine {
 		});
 	}
 
-	private async askOllama(profile: AgentProfile, messages: OllamaMessage[]): Promise<string> {
-		const baseUrl = cleanBaseUrl(profile.ollamaBaseUrl);
-		const model = profile.ollamaModel?.trim() || "llama3.2:latest";
-		const response = await requestUrl({
-			url: `${baseUrl}/api/chat`,
-			method: "POST",
-			contentType: "application/json",
-			body: JSON.stringify({ model, messages, stream: false }),
-		});
-		const json = response.json as Partial<OllamaChatResponse>;
-		if (json.error) throw new Error(json.error);
-		return json.message?.content?.trim() || "(No response from Ollama.)";
-	}
-
 	async cancel(): Promise<void> {
+		if (this.abort) {
+			this.abort.abort();
+			this.abort = null;
+			this.busy = false;
+			this.emit();
+			return;
+		}
 		if (this.status.kind === "ready" && this.conn && this.sessionId != null) {
 			await this.conn.cancel({ sessionId: this.sessionId });
 		}
@@ -479,32 +510,13 @@ function shortName(name: string): string {
 	return name.split(/\s+/)[0]?.toLowerCase() ?? name;
 }
 
-function cleanBaseUrl(value: string | undefined): string {
-	return (value?.trim() || "http://127.0.0.1:11434").replace(/\/+$/, "");
-}
-
-function system(content: string): OllamaMessage {
-	return { role: "system", content };
-}
-
-function user(content: string): OllamaMessage {
-	return { role: "user", content };
-}
-
-function ollamaError(err: unknown): string {
+function chatError(err: unknown): string {
 	const message = (err as Error).message || String(err);
-	return [
-		"Cortex could not answer.",
-		"",
-		"Check that Ollama is running locally:",
-		"`ollama serve`",
-		"",
-		"Check that the selected model is installed:",
-		"`ollama list`",
-		"`ollama pull llama3.2`",
-		"",
-		`Error: ${message}`,
-	].join("\n");
+	return `Cortex could not answer.\n\nError: ${message}`;
+}
+
+function isAbort(err: unknown): boolean {
+	return err instanceof DOMException && err.name === "AbortError";
 }
 
 function isEditCurrentNoteRequest(text: string): boolean {

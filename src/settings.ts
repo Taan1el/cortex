@@ -1,15 +1,19 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type CortexPlugin from "./main";
+
+export type ProviderKind = "acp" | "ollama" | "openai" | "anthropic" | "gemini";
 
 export interface AgentProfile {
 	id: string;
 	name: string;
-	provider?: "acp" | "ollama";
+	provider?: ProviderKind;
 	command: string;
 	args: string[];
 	env: Record<string, string>;
 	ollamaBaseUrl?: string;
 	ollamaModel?: string;
+	model?: string;
+	baseUrl?: string;
 }
 
 export interface SavedPrompt {
@@ -23,6 +27,7 @@ export type EffortLevel = "minimal" | "low" | "medium" | "high";
 export interface CortexSettings {
 	profiles: AgentProfile[];
 	activeProfileId: string;
+	apiKeys: Record<string, string>;
 	autoApproveReads: boolean;
 	autoApproveWrites: boolean;
 	autoInjectActiveNote: boolean;
@@ -30,7 +35,16 @@ export interface CortexSettings {
 	savedPrompts: SavedPrompt[];
 	importFolder: string;
 	debugLogging: boolean;
+	ragUseInChat: boolean;
+	ragTopK: number;
+	ragExcludeFolder: string;
 }
+
+export const CLOUD_DEFAULT_MODELS: Record<string, string> = {
+	openai: "gpt-4o-mini",
+	anthropic: "claude-3-5-haiku-latest",
+	gemini: "gemini-2.0-flash",
+};
 
 export const PROFILE_TEMPLATES: Record<string, Omit<AgentProfile, "id" | "env">> = {
 	"ollama-local": {
@@ -41,6 +55,9 @@ export const PROFILE_TEMPLATES: Record<string, Omit<AgentProfile, "id" | "env">>
 		ollamaBaseUrl: "http://127.0.0.1:11434",
 		ollamaModel: "llama3.2:latest",
 	},
+	openai: { name: "OpenAI", provider: "openai", command: "", args: [], model: "gpt-4o-mini" },
+	anthropic: { name: "Anthropic Claude", provider: "anthropic", command: "", args: [], model: "claude-3-5-haiku-latest" },
+	"gemini-api": { name: "Google Gemini", provider: "gemini", command: "", args: [], model: "gemini-2.0-flash" },
 	"claude-code": { name: "Claude Code", provider: "acp", command: "npx", args: ["-y", "@zed-industries/claude-code-acp"] },
 	codex: { name: "OpenAI Codex", provider: "acp", command: "npx", args: ["-y", "@zed-industries/codex-acp"] },
 	gemini: { name: "Gemini CLI", provider: "acp", command: "npx", args: ["-y", "@google/gemini-cli", "--experimental-acp"] },
@@ -62,6 +79,7 @@ export const DEFAULT_SETTINGS: CortexSettings = {
 		},
 	],
 	activeProfileId: "ollama-local",
+	apiKeys: {},
 	autoApproveReads: true,
 	autoApproveWrites: false,
 	autoInjectActiveNote: false,
@@ -72,6 +90,9 @@ export const DEFAULT_SETTINGS: CortexSettings = {
 	],
 	importFolder: "ChatGPT",
 	debugLogging: false,
+	ragUseInChat: false,
+	ragTopK: 5,
+	ragExcludeFolder: "",
 };
 
 export class CortexSettingTab extends PluginSettingTab {
@@ -118,6 +139,8 @@ export class CortexSettingTab extends PluginSettingTab {
 			);
 
 		for (const profile of this.plugin.settings.profiles) this.renderProfile(containerEl, profile);
+
+		this.renderVaultSearch(containerEl);
 
 		new Setting(containerEl).setName("Notes & permissions").setHeading();
 
@@ -176,6 +199,69 @@ export class CortexSettingTab extends PluginSettingTab {
 			.setName("Debug logging")
 			.setDesc("Print agent traffic to the developer console. Only for troubleshooting.")
 			.addToggle((t) => t.setValue(this.plugin.settings.debugLogging).onChange(async (v) => { this.plugin.settings.debugLogging = v; await this.save(); }));
+	}
+
+	private renderVaultSearch(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName("Vault search (RAG)").setHeading();
+
+		const index = this.plugin.index;
+		const status = index.status;
+		const statusText = status.building
+			? `Building... ${status.progress.done}/${status.progress.total}`
+			: status.ready
+				? `Indexed ${status.chunkCount} chunks from ${status.fileCount} notes (model: ${status.model})`
+				: "Not built yet";
+
+		new Setting(containerEl)
+			.setName("Index status")
+			.setDesc(statusText)
+			.addButton((b) =>
+				b.setButtonText(status.ready ? "Rebuild" : "Build index").setCta().setDisabled(status.building).onClick(async () => {
+					const controller = new AbortController();
+					new Notice("Cortex: building vault index...");
+					try {
+						await index.rebuild(controller.signal);
+						new Notice("Cortex: vault index ready.");
+					} catch (err) {
+						new Notice(`Cortex index failed: ${(err as Error).message}`);
+					}
+					this.display();
+				}),
+			)
+			.addButton((b) =>
+				b.setButtonText("Update").setDisabled(status.building || !status.ready).onClick(async () => {
+					const controller = new AbortController();
+					new Notice("Cortex: updating vault index...");
+					try {
+						await index.refresh(controller.signal);
+						new Notice("Cortex: vault index updated.");
+					} catch (err) {
+						new Notice(`Cortex update failed: ${(err as Error).message}`);
+					}
+					this.display();
+				}),
+			)
+			.addExtraButton((b) =>
+				b.setIcon("trash").setTooltip("Clear index").setDisabled(status.building || !status.ready).onClick(async () => {
+					await index.clear();
+					this.display();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName("Use vault search in chat")
+			.setDesc("Before answering, find the most relevant notes across your whole vault and feed them to the assistant. Needs an embedding-capable agent (Ollama, OpenAI, or Gemini).")
+			.addToggle((t) => t.setValue(this.plugin.settings.ragUseInChat).onChange(async (v) => { this.plugin.settings.ragUseInChat = v; await this.save(); }));
+
+		new Setting(containerEl)
+			.setName("Notes to retrieve")
+			.setDesc("How many note chunks to pull in per question.")
+			.addSlider((s) => s.setLimits(1, 12, 1).setValue(this.plugin.settings.ragTopK).setDynamicTooltip().onChange(async (v) => { this.plugin.settings.ragTopK = v; await this.save(); }));
+
+		new Setting(containerEl)
+			.setName("Exclude folder")
+			.setDesc("Skip this folder when indexing (e.g. a private or archive folder). Leave blank to index everything.")
+			.addText((t) => t.setValue(this.plugin.settings.ragExcludeFolder).onChange(async (v) => { this.plugin.settings.ragExcludeFolder = v.trim(); await this.save(); }));
 	}
 
 	private renderProfile(containerEl: HTMLElement, profile: AgentProfile): void {

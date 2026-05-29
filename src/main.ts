@@ -4,14 +4,20 @@ import { CortexSettingTab, DEFAULT_SETTINGS, type AgentProfile, type CortexSetti
 import { CortexEngine } from "./agent/controller";
 import { CortexView, CORTEX_VIEW } from "./view/panel";
 import { ChatGptImportModal } from "./import/import-modal";
+import { VaultIndex, type RagIndexData } from "./vault/rag";
+
+const INDEX_FILE = "cortex-index.json";
 
 export default class CortexPlugin extends Plugin {
 	settings!: CortexSettings;
 	engine!: CortexEngine;
+	index!: VaultIndex;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
-		this.engine = new CortexEngine(this.app, () => this.settings);
+		this.index = new VaultIndex(this.app, () => this.settings, (data) => this.saveIndex(data));
+		this.index.load(await this.loadIndex());
+		this.engine = new CortexEngine(this.app, () => this.settings, this.index);
 
 		this.registerView(CORTEX_VIEW, (leaf) => new CortexView(leaf, this));
 
@@ -35,6 +41,10 @@ export default class CortexPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<CortexSettings>);
+		if (!this.settings.apiKeys) this.settings.apiKeys = {};
+		if (typeof this.settings.ragTopK !== "number") this.settings.ragTopK = DEFAULT_SETTINGS.ragTopK;
+		if (typeof this.settings.ragUseInChat !== "boolean") this.settings.ragUseInChat = DEFAULT_SETTINGS.ragUseInChat;
+		if (typeof this.settings.ragExcludeFolder !== "string") this.settings.ragExcludeFolder = DEFAULT_SETTINGS.ragExcludeFolder;
 		const legacyOllamaId = ["ollama", "team"].join("-");
 		for (const profile of this.settings.profiles) {
 			if (profile.id === legacyOllamaId) profile.id = "ollama-local";
@@ -51,6 +61,29 @@ export default class CortexPlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+	}
+
+	private indexPath(): string {
+		return `${this.manifest.dir}/${INDEX_FILE}`;
+	}
+
+	private async loadIndex(): Promise<RagIndexData | null> {
+		try {
+			const path = this.indexPath();
+			if (!(await this.app.vault.adapter.exists(path))) return null;
+			return JSON.parse(await this.app.vault.adapter.read(path)) as RagIndexData;
+		} catch {
+			return null;
+		}
+	}
+
+	private async saveIndex(data: RagIndexData | null): Promise<void> {
+		const path = this.indexPath();
+		if (!data) {
+			if (await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.remove(path);
+			return;
+		}
+		await this.app.vault.adapter.write(path, JSON.stringify(data));
 	}
 
 	activeProfile(): AgentProfile {
