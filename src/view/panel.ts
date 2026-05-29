@@ -1,4 +1,4 @@
-﻿import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+﻿import { ItemView, MarkdownRenderer, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type CortexPlugin from "../main";
 import type { EffortLevel } from "../settings";
 import type { EngineState, PanelItem } from "../types";
@@ -29,6 +29,7 @@ export class CortexView extends ItemView {
 	private savedRowEl!: HTMLElement;
 	private inputEl!: HTMLTextAreaElement;
 	private effortPillEl!: HTMLButtonElement;
+	private ragPillEl!: HTMLButtonElement;
 	private sendBtnEl!: HTMLButtonElement;
 
 	constructor(leaf: WorkspaceLeaf, private plugin: CortexPlugin) {
@@ -109,6 +110,9 @@ export class CortexView extends ItemView {
 		this.effortPillEl = row.createEl("button", { cls: "cortex-effort-pill", attr: { "aria-label": "Reasoning effort" } });
 		this.effortPillEl.setText(`effort: ${this.plugin.settings.effort}`);
 		this.effortPillEl.addEventListener("click", () => this.openEffortMenu(this.effortPillEl));
+		this.ragPillEl = row.createEl("button", { cls: "cortex-effort-pill cortex-rag-pill", attr: { "aria-label": "Search across all notes" } });
+		this.updateRagPill();
+		this.ragPillEl.addEventListener("click", () => void this.toggleRag());
 		this.sendBtnEl = row.createEl("button", { cls: "cortex-send-btn", attr: { "aria-label": "Send" } });
 		setIcon(this.sendBtnEl, "arrow-up");
 		this.sendBtnEl.addEventListener("click", () => this.submit());
@@ -150,6 +154,25 @@ export class CortexView extends ItemView {
 		}
 		const rect = anchor.getBoundingClientRect();
 		menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
+	}
+
+	private updateRagPill(): void {
+		const on = this.plugin.settings.ragUseInChat;
+		setIcon(this.ragPillEl, "library");
+		this.ragPillEl.createSpan({ text: on ? " vault: on" : " vault: off" });
+		this.ragPillEl.toggleClass("is-active", on);
+	}
+
+	private async toggleRag(): Promise<void> {
+		const next = !this.plugin.settings.ragUseInChat;
+		if (next && !this.plugin.index.status.ready) {
+			new Notice("Build the vault index first: Settings → Cortex → Vault search.");
+			return;
+		}
+		this.plugin.settings.ragUseInChat = next;
+		await this.plugin.saveSettings();
+		this.ragPillEl.empty();
+		this.updateRagPill();
 	}
 
 	private openEffortMenu(anchor: HTMLElement): void {
@@ -271,7 +294,9 @@ export class CortexView extends ItemView {
 		const row = this.messagesEl.createDiv({ cls: `cortex-msg cortex-msg-${item.from}` });
 		const avatar = row.createSpan({ cls: "cortex-avatar" });
 		setIcon(avatar, "brain");
-		row.createDiv({ cls: "cortex-msg-body", text: item.text });
+		const body = row.createDiv({ cls: "cortex-msg-body" });
+		const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+		void MarkdownRenderer.render(this.app, item.text, body, sourcePath, this);
 	}
 
 	private renderTool(item: Extract<PanelItem, { kind: "tool" }>): void {
