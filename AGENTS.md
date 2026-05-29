@@ -30,10 +30,12 @@ npm audit --audit-level=moderate
 
 ## Coding Rules
 
+- Never read `main.js` — it is a ~700KB generated bundle (~175k tokens) and reading it overflows the model context window and fails the request. Edit `src/` only and rebuild.
 - Keep vault path handling defensive; never allow file access outside the vault root.
 - Treat missing agent configuration as a user-facing state, not a crash path.
 - Do not commit API keys or agent secrets.
 - Keep generated `main.js` in sync after source changes by running `npm run build`.
+- Write `manifest.json`/`data.json` as UTF-8 **without BOM**. A BOM makes Obsidian's `JSON.parse` throw and the plugin silently disappears from the Community plugins list. PowerShell `Out-File`/`Set-Content` add a BOM by default — use `-Encoding utf8NoBOM` (PS7) or the build/Node to write these.
 
 ## Maintenance Checks
 
