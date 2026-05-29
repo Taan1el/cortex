@@ -35,7 +35,7 @@ __export(main_exports, {
   default: () => CortexPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -48,6 +48,9 @@ var PROFILE_TEMPLATES = {
     ollamaBaseUrl: "http://127.0.0.1:11434",
     ollamaModel: "llama3.2:latest"
   },
+  openai: { name: "OpenAI", provider: "openai", command: "", args: [], model: "gpt-4o-mini" },
+  anthropic: { name: "Anthropic Claude", provider: "anthropic", command: "", args: [], model: "claude-3-5-haiku-latest" },
+  "gemini-api": { name: "Google Gemini", provider: "gemini", command: "", args: [], model: "gemini-2.0-flash" },
   "claude-code": { name: "Claude Code", provider: "acp", command: "npx", args: ["-y", "@zed-industries/claude-code-acp"] },
   codex: { name: "OpenAI Codex", provider: "acp", command: "npx", args: ["-y", "@zed-industries/codex-acp"] },
   gemini: { name: "Gemini CLI", provider: "acp", command: "npx", args: ["-y", "@google/gemini-cli", "--experimental-acp"] },
@@ -68,6 +71,7 @@ var DEFAULT_SETTINGS = {
     }
   ],
   activeProfileId: "ollama-local",
+  apiKeys: {},
   autoApproveReads: true,
   autoApproveWrites: false,
   autoInjectActiveNote: false,
@@ -77,7 +81,10 @@ var DEFAULT_SETTINGS = {
     { id: "improve", name: "Improve writing", prompt: "Improve the active note's clarity and flow, keeping my voice. Ask before replacing the file." }
   ],
   importFolder: "ChatGPT",
-  debugLogging: false
+  debugLogging: false,
+  ragUseInChat: false,
+  ragTopK: 5,
+  ragExcludeFolder: ""
 };
 var CortexSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -112,6 +119,7 @@ var CortexSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     for (const profile of this.plugin.settings.profiles) this.renderProfile(containerEl, profile);
+    this.renderVaultSearch(containerEl);
     new import_obsidian.Setting(containerEl).setName("Notes & permissions").setHeading();
     new import_obsidian.Setting(containerEl).setName("Send the note I'm viewing").setDesc("For Ollama Local this is always local. For external ACP agents, turn this on only for notes you are comfortable sending to that agent.").addToggle((t) => t.setValue(this.plugin.settings.autoInjectActiveNote).onChange(async (v) => {
       this.plugin.settings.autoInjectActiveNote = v;
@@ -166,6 +174,54 @@ var CortexSettingTab = class extends import_obsidian.PluginSettingTab {
       await this.save();
     }));
   }
+  renderVaultSearch(containerEl) {
+    new import_obsidian.Setting(containerEl).setName("Vault search (RAG)").setHeading();
+    const index = this.plugin.index;
+    const status = index.status;
+    const statusText = status.building ? `Building... ${status.progress.done}/${status.progress.total}` : status.ready ? `Indexed ${status.chunkCount} chunks from ${status.fileCount} notes (model: ${status.model})` : "Not built yet";
+    new import_obsidian.Setting(containerEl).setName("Index status").setDesc(statusText).addButton(
+      (b) => b.setButtonText(status.ready ? "Rebuild" : "Build index").setCta().setDisabled(status.building).onClick(async () => {
+        const controller = new AbortController();
+        new import_obsidian.Notice("Cortex: building vault index...");
+        try {
+          await index.rebuild(controller.signal);
+          new import_obsidian.Notice("Cortex: vault index ready.");
+        } catch (err) {
+          new import_obsidian.Notice(`Cortex index failed: ${err.message}`);
+        }
+        this.display();
+      })
+    ).addButton(
+      (b) => b.setButtonText("Update").setDisabled(status.building || !status.ready).onClick(async () => {
+        const controller = new AbortController();
+        new import_obsidian.Notice("Cortex: updating vault index...");
+        try {
+          await index.refresh(controller.signal);
+          new import_obsidian.Notice("Cortex: vault index updated.");
+        } catch (err) {
+          new import_obsidian.Notice(`Cortex update failed: ${err.message}`);
+        }
+        this.display();
+      })
+    ).addExtraButton(
+      (b) => b.setIcon("trash").setTooltip("Clear index").setDisabled(status.building || !status.ready).onClick(async () => {
+        await index.clear();
+        this.display();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Use vault search in chat").setDesc("Before answering, find the most relevant notes across your whole vault and feed them to the assistant. Needs an embedding-capable agent (Ollama, OpenAI, or Gemini).").addToggle((t) => t.setValue(this.plugin.settings.ragUseInChat).onChange(async (v) => {
+      this.plugin.settings.ragUseInChat = v;
+      await this.save();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Notes to retrieve").setDesc("How many note chunks to pull in per question.").addSlider((s) => s.setLimits(1, 12, 1).setValue(this.plugin.settings.ragTopK).setDynamicTooltip().onChange(async (v) => {
+      this.plugin.settings.ragTopK = v;
+      await this.save();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Exclude folder").setDesc("Skip this folder when indexing (e.g. a private or archive folder). Leave blank to index everything.").addText((t) => t.setValue(this.plugin.settings.ragExcludeFolder).onChange(async (v) => {
+      this.plugin.settings.ragExcludeFolder = v.trim();
+      await this.save();
+    }));
+  }
   renderProfile(containerEl, profile) {
     const wrap = containerEl.createDiv({ cls: "cortex-profile" });
     new import_obsidian.Setting(wrap).setName(profile.name).setHeading();
@@ -207,7 +263,7 @@ var CortexSettingTab = class extends import_obsidian.PluginSettingTab {
 var import_node_child_process = require("node:child_process");
 var import_node_process = __toESM(require("node:process"));
 var import_node_stream = require("node:stream");
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -17223,11 +17279,326 @@ function sliceLines(text, line, limit) {
   return lines.slice(start, end).join("\n");
 }
 
+// src/providers/ollama.ts
+var import_obsidian3 = require("obsidian");
+
+// src/providers/http.ts
+async function openStream(req) {
+  const res = await fetch(req.url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...req.headers },
+    body: JSON.stringify(req.body),
+    signal: req.signal
+  });
+  if (!res.ok || !res.body) {
+    const detail = await safeBody(res);
+    throw new Error(`HTTP ${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`);
+  }
+  return res;
+}
+async function* readLines(res) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (; ; ) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).replace(/\r$/, "");
+        buffer = buffer.slice(nl + 1);
+        if (line) yield line;
+      }
+    }
+    const tail = buffer.trim();
+    if (tail) yield tail;
+  } finally {
+    reader.releaseLock();
+  }
+}
+async function* readSse(res) {
+  for await (const line of readLines(res)) {
+    if (line.startsWith("data:")) {
+      yield line.slice(5).trim();
+    }
+  }
+}
+async function safeBody(res) {
+  try {
+    const text = await res.text();
+    return text.slice(0, 500);
+  } catch {
+    return "";
+  }
+}
+
+// src/providers/ollama.ts
+var OllamaProvider = class {
+  constructor(ctx) {
+    this.id = "ollama";
+    this.baseUrl = cleanBaseUrl(ctx.profile.ollamaBaseUrl);
+    this.model = ctx.profile.ollamaModel?.trim() || "llama3.2:latest";
+  }
+  async ready() {
+    try {
+      await (0, import_obsidian3.requestUrl)({ url: `${this.baseUrl}/api/tags`, method: "GET" });
+    } catch (err) {
+      throw new Error(ollamaError(err));
+    }
+  }
+  async stream(messages, opts, onChunk) {
+    const res = await openStream({
+      url: `${this.baseUrl}/api/chat`,
+      headers: {},
+      body: { model: this.model, messages, stream: true },
+      signal: opts.signal
+    });
+    let full = "";
+    for await (const line of readLines(res)) {
+      let chunk;
+      try {
+        chunk = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (chunk.error) throw new Error(chunk.error);
+      const delta = chunk.message?.content;
+      if (delta) {
+        full += delta;
+        onChunk(delta);
+      }
+    }
+    return full;
+  }
+  async embed(texts, signal) {
+    const out = [];
+    for (const text of texts) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const res = await (0, import_obsidian3.requestUrl)({
+        url: `${this.baseUrl}/api/embeddings`,
+        method: "POST",
+        contentType: "application/json",
+        body: JSON.stringify({ model: this.model, prompt: text })
+      });
+      const json2 = res.json;
+      if (json2.error) throw new Error(json2.error);
+      if (!json2.embedding) throw new Error("Ollama returned no embedding.");
+      out.push(json2.embedding);
+    }
+    return out;
+  }
+};
+function cleanBaseUrl(value) {
+  return (value?.trim() || "http://127.0.0.1:11434").replace(/\/+$/, "");
+}
+function ollamaError(err) {
+  const message = err.message || String(err);
+  return [
+    "Cortex could not reach Ollama.",
+    "",
+    "Check that Ollama is running locally:",
+    "`ollama serve`",
+    "",
+    "Check that the selected model is installed:",
+    "`ollama list`",
+    "`ollama pull llama3.2`",
+    "",
+    `Error: ${message}`
+  ].join("\n");
+}
+
+// src/providers/openai.ts
+var OpenAiProvider = class {
+  constructor(ctx) {
+    this.id = "openai";
+    this.apiKey = ctx.apiKey;
+    this.model = ctx.profile.model?.trim() || "gpt-4o-mini";
+    this.baseUrl = (ctx.profile.baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
+  }
+  async ready() {
+    if (!this.apiKey) throw new Error("Add your OpenAI API key in Cortex settings.");
+  }
+  async stream(messages, opts, onChunk) {
+    const res = await openStream({
+      url: `${this.baseUrl}/chat/completions`,
+      headers: { Authorization: `Bearer ${this.apiKey}` },
+      body: { model: this.model, messages, stream: true },
+      signal: opts.signal
+    });
+    let full = "";
+    for await (const data of readSse(res)) {
+      if (data === "[DONE]") break;
+      let chunk;
+      try {
+        chunk = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (delta) {
+        full += delta;
+        onChunk(delta);
+      }
+    }
+    return full;
+  }
+  async embed(texts, signal) {
+    const res = await fetch(`${this.baseUrl}/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({ model: "text-embedding-3-small", input: texts }),
+      signal
+    });
+    if (!res.ok) throw new Error(`OpenAI embeddings HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const json2 = await res.json();
+    return (json2.data ?? []).map((d) => d.embedding);
+  }
+};
+
+// src/providers/anthropic.ts
+var AnthropicProvider = class {
+  constructor(ctx) {
+    this.id = "anthropic";
+    this.apiKey = ctx.apiKey;
+    this.model = ctx.profile.model?.trim() || "claude-3-5-haiku-latest";
+    this.baseUrl = (ctx.profile.baseUrl?.trim() || "https://api.anthropic.com/v1").replace(/\/+$/, "");
+  }
+  async ready() {
+    if (!this.apiKey) throw new Error("Add your Anthropic API key in Cortex settings.");
+  }
+  async stream(messages, opts, onChunk) {
+    const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+    const turns = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role, content: m.content }));
+    const res = await openStream({
+      url: `${this.baseUrl}/messages`,
+      headers: {
+        "x-api-key": this.apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: { model: this.model, max_tokens: 4096, system: system || void 0, messages: turns, stream: true },
+      signal: opts.signal
+    });
+    let full = "";
+    for await (const data of readSse(res)) {
+      let event;
+      try {
+        event = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (event.error) throw new Error(event.error.message || "Anthropic error");
+      if (event.type === "content_block_delta" && event.delta?.text) {
+        full += event.delta.text;
+        onChunk(event.delta.text);
+      }
+    }
+    return full;
+  }
+};
+
+// src/providers/gemini.ts
+var GeminiProvider = class {
+  constructor(ctx) {
+    this.id = "gemini";
+    this.apiKey = ctx.apiKey;
+    this.model = ctx.profile.model?.trim() || "gemini-2.0-flash";
+    this.baseUrl = (ctx.profile.baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
+  }
+  async ready() {
+    if (!this.apiKey) throw new Error("Add your Google Gemini API key in Cortex settings.");
+  }
+  async stream(messages, opts, onChunk) {
+    const systemText = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+    const contents = messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+    const url2 = `${this.baseUrl}/models/${encodeURIComponent(this.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(this.apiKey)}`;
+    const res = await openStream({
+      url: url2,
+      headers: {},
+      body: {
+        contents,
+        systemInstruction: systemText ? { parts: [{ text: systemText }] } : void 0
+      },
+      signal: opts.signal
+    });
+    let full = "";
+    for await (const data of readSse(res)) {
+      let chunk;
+      try {
+        chunk = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (chunk.error) throw new Error(chunk.error.message || "Gemini error");
+      const delta = chunk.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+      if (delta) {
+        full += delta;
+        onChunk(delta);
+      }
+    }
+    return full;
+  }
+  async embed(texts, signal) {
+    const out = [];
+    for (const text of texts) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const url2 = `${this.baseUrl}/models/text-embedding-004:embedContent?key=${encodeURIComponent(this.apiKey)}`;
+      const res = await fetch(url2, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: { parts: [{ text }] } }),
+        signal
+      });
+      if (!res.ok) throw new Error(`Gemini embeddings HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const json2 = await res.json();
+      if (!json2.embedding?.values) throw new Error("Gemini returned no embedding.");
+      out.push(json2.embedding.values);
+    }
+    return out;
+  }
+};
+
+// src/providers/index.ts
+function context(profile, settings) {
+  const kind = profile.provider ?? "acp";
+  return { profile, apiKey: settings.apiKeys[kind]?.trim() ?? "" };
+}
+function createChatProvider(profile, settings) {
+  const ctx = context(profile, settings);
+  switch (profile.provider) {
+    case "openai":
+      return new OpenAiProvider(ctx);
+    case "anthropic":
+      return new AnthropicProvider(ctx);
+    case "gemini":
+      return new GeminiProvider(ctx);
+    case "ollama":
+    default:
+      return new OllamaProvider(ctx);
+  }
+}
+function createEmbeddingProvider(profile, settings) {
+  const ctx = context(profile, settings);
+  switch (profile.provider) {
+    case "openai":
+      return new OpenAiProvider(ctx);
+    case "gemini":
+      return new GeminiProvider(ctx);
+    case "ollama":
+      return new OllamaProvider(ctx);
+    default:
+      return null;
+  }
+}
+
 // src/agent/controller.ts
 var CortexEngine = class {
-  constructor(app, getSettings) {
+  constructor(app, getSettings, index) {
     this.app = app;
     this.getSettings = getSettings;
+    this.index = index;
     this.status = { kind: "idle" };
     this.items = [];
     this.busy = false;
@@ -17237,6 +17608,8 @@ var CortexEngine = class {
     this.sessionId = null;
     this.firstTurn = true;
     this.activeProfile = null;
+    this.chatProvider = null;
+    this.abort = null;
     this.asks = /* @__PURE__ */ new Map();
     this.localAsks = /* @__PURE__ */ new Map();
     this.listeners = /* @__PURE__ */ new Set();
@@ -17258,11 +17631,11 @@ var CortexEngine = class {
     this.activeProfile = profile;
     this.emit();
     try {
-      if ((profile.provider ?? "acp") === "ollama") {
-        await this.startOllama(profile);
-        return;
+      if ((profile.provider ?? "acp") === "acp") {
+        await this.startAcp(profile);
+      } else {
+        await this.startChat(profile);
       }
-      await this.startAcp(profile);
     } catch (err) {
       this.status = { kind: "error", message: err.message };
       this.emit();
@@ -17304,12 +17677,12 @@ var CortexEngine = class {
     this.status = { kind: "ready", sessionId: session.sessionId };
     this.emit();
   }
-  async startOllama(profile) {
-    const baseUrl = cleanBaseUrl(profile.ollamaBaseUrl);
-    const model = profile.ollamaModel?.trim() || "llama3.2:latest";
-    await (0, import_obsidian3.requestUrl)({ url: `${baseUrl}/api/tags`, method: "GET" });
-    this.sessionId = `ollama-${rid()}`;
-    this.model = `ollama:${model}`;
+  async startChat(profile) {
+    const provider = createChatProvider(profile, this.getSettings());
+    await provider.ready();
+    this.chatProvider = provider;
+    this.sessionId = `chat-${rid()}`;
+    this.model = provider.model;
     this.firstTurn = true;
     this.status = { kind: "ready", sessionId: this.sessionId };
     this.emit();
@@ -17323,6 +17696,9 @@ var CortexEngine = class {
     this.asks.clear();
     for (const resolve2 of this.localAsks.values()) resolve2("deny");
     this.localAsks.clear();
+    this.abort?.abort();
+    this.abort = null;
+    this.chatProvider = null;
     this.proc = null;
     this.conn = null;
     this.sessionId = null;
@@ -17337,8 +17713,8 @@ var CortexEngine = class {
       throw new Error("Cortex is not connected to an agent yet.");
     }
     const profile = this.activeProfile;
-    if (profile && (profile.provider ?? "acp") === "ollama") {
-      await this.sendOllama(text, profile);
+    if (profile && (profile.provider ?? "acp") !== "acp") {
+      await this.sendChat(text);
       return;
     }
     await this.sendAcp(text);
@@ -17356,8 +17732,8 @@ var CortexEngine = class {
       blocks.push({ type: "text", text: this.intro() });
       this.firstTurn = false;
     }
-    const context = await this.buildContext(settings);
-    if (context) blocks.push({ type: "text", text: context });
+    const context2 = await this.buildContext(settings);
+    if (context2) blocks.push({ type: "text", text: context2 });
     blocks.push({ type: "text", text });
     try {
       await this.conn.prompt({ sessionId: this.sessionId, prompt: blocks });
@@ -17368,58 +17744,67 @@ var CortexEngine = class {
       this.emit();
     }
   }
-  async sendOllama(text, profile) {
+  async sendChat(text) {
+    const provider = this.chatProvider;
+    if (!provider) throw new Error("Cortex is not connected to a provider yet.");
     const settings = this.getSettings();
     this.items.push({ kind: "message", id: rid(), from: "user", text });
     this.busy = true;
     this.emit();
-    const context = await this.buildContext(settings);
+    const context2 = await this.buildContext(settings);
+    this.abort = new AbortController();
     try {
       if (isEditCurrentNoteRequest(text)) {
-        await this.runOllamaNoteEdit(text, profile);
+        await this.runChatNoteEdit(text, provider);
         return;
       }
-      const answer = await this.askOllama(profile, [
-        system("You are Cortex, a local Obsidian assistant. Answer simply and directly. Keep replies short unless the user asks for detail."),
-        user([
-          "User request:",
-          text,
-          "",
-          "Vault context:",
-          context ?? "No extra context."
-        ].join("\n"))
-      ]);
-      this.items.push({ kind: "message", id: rid(), from: "assistant", text: answer });
+      const retrieved = await this.retrieveVaultContext(text, settings);
+      const contextParts = [context2 ?? "No extra context."];
+      if (retrieved) contextParts.push("", retrieved);
+      const messages = [
+        { role: "system", content: "You are Cortex, a local Obsidian assistant. Answer simply and directly. Keep replies short unless the user asks for detail. When relevant vault notes are provided, ground your answer in them and cite note paths." },
+        { role: "user", content: ["User request:", text, "", "Vault context:", ...contextParts].join("\n") }
+      ];
+      await provider.stream(messages, { signal: this.abort.signal, effort: settings.effort }, (delta) => {
+        this.appendChunk("assistant", { type: "text", text: delta });
+        this.emit();
+      });
     } catch (err) {
-      this.items.push({ kind: "message", id: rid(), from: "assistant", text: ollamaError(err) });
+      if (!isAbort(err)) this.items.push({ kind: "message", id: rid(), from: "assistant", text: chatError(err) });
     } finally {
+      this.abort = null;
       this.busy = false;
       this.emit();
     }
   }
-  async runOllamaNoteEdit(text, profile) {
+  async runChatNoteEdit(text, provider) {
     const file2 = this.app.workspace.getActiveFile();
     if (!file2) {
       this.items.push({ kind: "message", id: rid(), from: "assistant", text: "Open a note first, then ask me to improve or rewrite it." });
       return;
     }
     const original = await this.app.vault.cachedRead(file2);
-    const revisedRaw = await this.askOllama(profile, [
-      system("You are Cortex, a local Obsidian note editor. Rewrite the active note according to the user request. Preserve meaning, frontmatter, headings, links, tags, and facts. Output only the complete revised Markdown note. No explanation."),
-      user([
-        "User request:",
-        text,
-        "",
-        `Current file: ${file2.path}`,
-        "",
-        "Current note:",
-        "```markdown",
-        original,
-        "```",
-        "",
-        "Return only the full revised Markdown note."
-      ].join("\n"))
-    ]);
+    const messages = [
+      { role: "system", content: "You are Cortex, a local Obsidian note editor. Rewrite the active note according to the user request. Preserve meaning, frontmatter, headings, links, tags, and facts. Output only the complete revised Markdown note. No explanation." },
+      {
+        role: "user",
+        content: [
+          "User request:",
+          text,
+          "",
+          `Current file: ${file2.path}`,
+          "",
+          "Current note:",
+          "```markdown",
+          original,
+          "```",
+          "",
+          "Return only the full revised Markdown note."
+        ].join("\n")
+      }
+    ];
+    const signal = this.abort?.signal ?? new AbortController().signal;
+    const revisedRaw = await provider.stream(messages, { signal, effort: this.getSettings().effort }, () => void 0);
     const revised = cleanRevisedMarkdown(revisedRaw);
     if (!revised.trim() || revised.trim() === original.trim()) {
       this.items.push({ kind: "message", id: rid(), from: "assistant", text: "I could not produce a useful edit. I left the note unchanged." });
@@ -17432,6 +17817,40 @@ var CortexEngine = class {
     }
     await this.files.writeWithNotice(file2.path, revised);
     this.items.push({ kind: "message", id: rid(), from: "assistant", text: `Updated ${file2.path}` });
+  }
+  /** Semantic-search the vault and format the top hits as a context block. */
+  async retrieveVaultContext(query, settings) {
+    if (!settings.ragUseInChat || !this.index.status.ready) return null;
+    const signal = this.abort?.signal ?? new AbortController().signal;
+    const tool = {
+      kind: "tool",
+      id: rid(),
+      callId: rid(),
+      title: "Searching vault",
+      status: "running",
+      locations: []
+    };
+    this.items.push(tool);
+    this.emit();
+    try {
+      const hits = await this.index.search(query, settings.ragTopK, signal);
+      tool.status = "done";
+      tool.title = `Searched vault \xB7 ${hits.length} matches`;
+      tool.locations = [...new Set(hits.map((h) => h.path))];
+      this.emit();
+      if (hits.length === 0) return null;
+      const lines = ["Relevant notes from the vault (retrieved by semantic search):"];
+      for (const hit of hits) {
+        const where = hit.heading ? `${hit.path} \u203A ${hit.heading}` : hit.path;
+        lines.push("", `[[${hit.path}]] (${where}, score ${hit.score.toFixed(2)}):`, hit.text);
+      }
+      return lines.join("\n");
+    } catch (err) {
+      tool.status = "failed";
+      tool.title = `Vault search failed: ${err.message}`;
+      this.emit();
+      return null;
+    }
   }
   requestLocalWriteApproval(path, preview, title = "Apply this edit to the current note?") {
     return new Promise((resolve2) => {
@@ -17454,20 +17873,14 @@ ${previewForApproval(preview)}` : path,
       this.emit();
     });
   }
-  async askOllama(profile, messages) {
-    const baseUrl = cleanBaseUrl(profile.ollamaBaseUrl);
-    const model = profile.ollamaModel?.trim() || "llama3.2:latest";
-    const response = await (0, import_obsidian3.requestUrl)({
-      url: `${baseUrl}/api/chat`,
-      method: "POST",
-      contentType: "application/json",
-      body: JSON.stringify({ model, messages, stream: false })
-    });
-    const json2 = response.json;
-    if (json2.error) throw new Error(json2.error);
-    return json2.message?.content?.trim() || "(No response from Ollama.)";
-  }
   async cancel() {
+    if (this.abort) {
+      this.abort.abort();
+      this.abort = null;
+      this.busy = false;
+      this.emit();
+      return;
+    }
     if (this.status.kind === "ready" && this.conn && this.sessionId != null) {
       await this.conn.cancel({ sessionId: this.sessionId });
     }
@@ -17612,7 +18025,7 @@ ${previewForApproval(preview)}` : path,
     } else {
       lines.push("[Context] No note is currently open.");
     }
-    const selection = this.app.workspace.getActiveViewOfType(import_obsidian3.MarkdownView)?.editor?.getSelection();
+    const selection = this.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView)?.editor?.getSelection();
     if (selection && selection.trim()) {
       lines.push("", "Selected text:", "```", selection, "```");
     }
@@ -17643,29 +18056,14 @@ function locationText(toolCall) {
 function shortName(name) {
   return name.split(/\s+/)[0]?.toLowerCase() ?? name;
 }
-function cleanBaseUrl(value) {
-  return (value?.trim() || "http://127.0.0.1:11434").replace(/\/+$/, "");
-}
-function system(content) {
-  return { role: "system", content };
-}
-function user(content) {
-  return { role: "user", content };
-}
-function ollamaError(err) {
+function chatError(err) {
   const message = err.message || String(err);
-  return [
-    "Cortex could not answer.",
-    "",
-    "Check that Ollama is running locally:",
-    "`ollama serve`",
-    "",
-    "Check that the selected model is installed:",
-    "`ollama list`",
-    "`ollama pull llama3.2`",
-    "",
-    `Error: ${message}`
-  ].join("\n");
+  return `Cortex could not answer.
+
+Error: ${message}`;
+}
+function isAbort(err) {
+  return err instanceof DOMException && err.name === "AbortError";
 }
 function isEditCurrentNoteRequest(text) {
   const t = text.toLowerCase();
@@ -17691,7 +18089,7 @@ function previewForApproval(markdown) {
 }
 
 // src/view/panel.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var CORTEX_VIEW = "cortex-view";
 var QUICK_ACTIONS = [
   { icon: "sparkles", label: "Summarize", prompt: "Summarize the note I'm currently viewing in a few clear bullet points." },
@@ -17701,7 +18099,7 @@ var QUICK_ACTIONS = [
   { icon: "book-open", label: "Explain", prompt: "Explain the note I'm currently viewing in simple terms." },
   { icon: "pencil", label: "Rewrite note", prompt: "Rewrite the active note to be clearer, keeping my voice. Ask before replacing it." }
 ];
-var CortexView = class extends import_obsidian4.ItemView {
+var CortexView = class extends import_obsidian5.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -17741,14 +18139,14 @@ var CortexView = class extends import_obsidian4.ItemView {
     const header = root.createDiv({ cls: "cortex-header" });
     const brand = header.createDiv({ cls: "cortex-brand" });
     const mark = brand.createSpan({ cls: "cortex-mark" });
-    (0, import_obsidian4.setIcon)(mark, "brain");
+    (0, import_obsidian5.setIcon)(mark, "brain");
     const titles = brand.createDiv({ cls: "cortex-titles" });
     titles.createDiv({ cls: "cortex-title", text: "Cortex" });
     const status = titles.createEl("button", { cls: "cortex-status", attr: { "aria-label": "Switch agent" } });
     this.statusDotEl = status.createSpan({ cls: "cortex-status-dot" });
     this.statusLabelEl = status.createSpan({ cls: "cortex-status-label" });
     const chevron = status.createSpan({ cls: "cortex-status-chevron" });
-    (0, import_obsidian4.setIcon)(chevron, "chevron-down");
+    (0, import_obsidian5.setIcon)(chevron, "chevron-down");
     status.addEventListener("click", () => this.openAgentMenu(status));
   }
   buildComposer(root) {
@@ -17771,8 +18169,11 @@ var CortexView = class extends import_obsidian4.ItemView {
     this.effortPillEl = row.createEl("button", { cls: "cortex-effort-pill", attr: { "aria-label": "Reasoning effort" } });
     this.effortPillEl.setText(`effort: ${this.plugin.settings.effort}`);
     this.effortPillEl.addEventListener("click", () => this.openEffortMenu(this.effortPillEl));
+    this.ragPillEl = row.createEl("button", { cls: "cortex-effort-pill cortex-rag-pill", attr: { "aria-label": "Search across all notes" } });
+    this.updateRagPill();
+    this.ragPillEl.addEventListener("click", () => void this.toggleRag());
     this.sendBtnEl = row.createEl("button", { cls: "cortex-send-btn", attr: { "aria-label": "Send" } });
-    (0, import_obsidian4.setIcon)(this.sendBtnEl, "arrow-up");
+    (0, import_obsidian5.setIcon)(this.sendBtnEl, "arrow-up");
     this.sendBtnEl.addEventListener("click", () => this.submit());
     this.updateSendState();
     this.renderSavedPrompts();
@@ -17785,13 +18186,13 @@ var CortexView = class extends import_obsidian4.ItemView {
       btn.addEventListener("click", () => {
         this.inputEl.value = "";
         this.updateSendState();
-        void this.plugin.engine.send(sp.prompt).catch((err) => new import_obsidian4.Notice(err.message));
+        void this.plugin.engine.send(sp.prompt).catch((err) => new import_obsidian5.Notice(err.message));
       });
     }
     this.savedRowEl.toggleClass("is-hidden", this.savedRowEl.childElementCount === 0);
   }
   openAgentMenu(anchor) {
-    const menu = new import_obsidian4.Menu();
+    const menu = new import_obsidian5.Menu();
     for (const profile of this.plugin.settings.profiles) {
       menu.addItem(
         (item) => item.setTitle(profile.name).setChecked(profile.id === this.plugin.settings.activeProfileId).onClick(async () => {
@@ -17807,8 +18208,25 @@ var CortexView = class extends import_obsidian4.ItemView {
     const rect = anchor.getBoundingClientRect();
     menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
   }
+  updateRagPill() {
+    const on = this.plugin.settings.ragUseInChat;
+    (0, import_obsidian5.setIcon)(this.ragPillEl, "library");
+    this.ragPillEl.createSpan({ text: on ? " vault: on" : " vault: off" });
+    this.ragPillEl.toggleClass("is-active", on);
+  }
+  async toggleRag() {
+    const next = !this.plugin.settings.ragUseInChat;
+    if (next && !this.plugin.index.status.ready) {
+      new import_obsidian5.Notice("Build the vault index first: Settings \u2192 Cortex \u2192 Vault search.");
+      return;
+    }
+    this.plugin.settings.ragUseInChat = next;
+    await this.plugin.saveSettings();
+    this.ragPillEl.empty();
+    this.updateRagPill();
+  }
   openEffortMenu(anchor) {
-    const menu = new import_obsidian4.Menu();
+    const menu = new import_obsidian5.Menu();
     const levels = ["minimal", "low", "medium", "high"];
     for (const level of levels) {
       menu.addItem(
@@ -17828,7 +18246,7 @@ var CortexView = class extends import_obsidian4.ItemView {
     if (file2 && this.plugin.settings.autoInjectActiveNote) {
       const chip = this.chipsEl.createSpan({ cls: "cortex-chip cortex-chip-active" });
       const icon = chip.createSpan({ cls: "cortex-chip-icon" });
-      (0, import_obsidian4.setIcon)(icon, "file-text");
+      (0, import_obsidian5.setIcon)(icon, "file-text");
       chip.createSpan({ text: file2.name });
     }
   }
@@ -17840,7 +18258,7 @@ var CortexView = class extends import_obsidian4.ItemView {
     if (!text) return;
     this.inputEl.value = "";
     this.updateSendState();
-    void this.plugin.engine.send(text).catch((err) => new import_obsidian4.Notice(err.message));
+    void this.plugin.engine.send(text).catch((err) => new import_obsidian5.Notice(err.message));
   }
   // Render
   render() {
@@ -17855,7 +18273,7 @@ var CortexView = class extends import_obsidian4.ItemView {
     if (state.busy) {
       const thinking = this.messagesEl.createDiv({ cls: "cortex-msg cortex-msg-assistant" });
       const avatar = thinking.createSpan({ cls: "cortex-avatar" });
-      (0, import_obsidian4.setIcon)(avatar, "brain");
+      (0, import_obsidian5.setIcon)(avatar, "brain");
       const dots = thinking.createDiv({ cls: "cortex-typing" });
       for (let i = 0; i < 3; i++) dots.createSpan({ cls: "cortex-typing-dot" });
     }
@@ -17871,7 +18289,7 @@ var CortexView = class extends import_obsidian4.ItemView {
     const empty = this.messagesEl.createDiv({ cls: "cortex-empty" });
     const markWrap = empty.createDiv({ cls: "cortex-empty-mark-wrap" });
     const mark = markWrap.createDiv({ cls: "cortex-empty-mark" });
-    (0, import_obsidian4.setIcon)(mark, "brain");
+    (0, import_obsidian5.setIcon)(mark, "brain");
     markWrap.createDiv({ cls: "cortex-empty-ring" });
     empty.createDiv({ cls: "cortex-empty-title", text: "Hey, I'm Cortex" });
     empty.createDiv({
@@ -17882,9 +18300,9 @@ var CortexView = class extends import_obsidian4.ItemView {
     for (const action of QUICK_ACTIONS) {
       const btn = grid.createEl("button", { cls: "cortex-quick" });
       const icon = btn.createSpan({ cls: "cortex-quick-icon" });
-      (0, import_obsidian4.setIcon)(icon, action.icon);
+      (0, import_obsidian5.setIcon)(icon, action.icon);
       btn.createSpan({ text: action.label });
-      btn.addEventListener("click", () => void this.plugin.engine.send(action.prompt).catch((err) => new import_obsidian4.Notice(err.message)));
+      btn.addEventListener("click", () => void this.plugin.engine.send(action.prompt).catch((err) => new import_obsidian5.Notice(err.message)));
     }
   }
   renderItem(item) {
@@ -17904,24 +18322,26 @@ var CortexView = class extends import_obsidian4.ItemView {
     }
     const row = this.messagesEl.createDiv({ cls: `cortex-msg cortex-msg-${item.from}` });
     const avatar = row.createSpan({ cls: "cortex-avatar" });
-    (0, import_obsidian4.setIcon)(avatar, "brain");
-    row.createDiv({ cls: "cortex-msg-body", text: item.text });
+    (0, import_obsidian5.setIcon)(avatar, "brain");
+    const body = row.createDiv({ cls: "cortex-msg-body" });
+    const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+    void import_obsidian5.MarkdownRenderer.render(this.app, item.text, body, sourcePath, this);
   }
   renderTool(item) {
     const row = this.messagesEl.createDiv({ cls: "cortex-tool" });
     const avatar = row.createSpan({ cls: "cortex-avatar cortex-avatar-tool" });
-    (0, import_obsidian4.setIcon)(avatar, "search");
+    (0, import_obsidian5.setIcon)(avatar, "search");
     const card = row.createDiv({ cls: "cortex-tool-card" });
     const head = card.createDiv({ cls: "cortex-tool-head" });
     head.createSpan({ cls: "cortex-tool-name", text: item.title });
     const statusIcon = head.createSpan({ cls: `cortex-tool-state cortex-tool-${item.status}` });
-    (0, import_obsidian4.setIcon)(statusIcon, item.status === "done" ? "check" : item.status === "failed" ? "x" : "loader");
+    (0, import_obsidian5.setIcon)(statusIcon, item.status === "done" ? "check" : item.status === "failed" ? "x" : "loader");
     if (item.locations.length) {
       const locs = card.createDiv({ cls: "cortex-tool-locations" });
       for (const path of item.locations) {
         const line = locs.createDiv({ cls: "cortex-tool-loc" });
         const icon = line.createSpan({ cls: "cortex-tool-loc-icon" });
-        (0, import_obsidian4.setIcon)(icon, "file-text");
+        (0, import_obsidian5.setIcon)(icon, "file-text");
         line.createSpan({ text: path });
       }
     }
@@ -17929,7 +18349,7 @@ var CortexView = class extends import_obsidian4.ItemView {
   renderAsk(item) {
     const row = this.messagesEl.createDiv({ cls: "cortex-ask" });
     const avatar = row.createSpan({ cls: "cortex-avatar cortex-avatar-warn" });
-    (0, import_obsidian4.setIcon)(avatar, "shield");
+    (0, import_obsidian5.setIcon)(avatar, "shield");
     const card = row.createDiv({ cls: "cortex-ask-card" });
     card.createDiv({ cls: "cortex-ask-label", text: "Permission needed" });
     card.createDiv({ cls: "cortex-ask-title", text: item.title });
@@ -17950,7 +18370,7 @@ var CortexView = class extends import_obsidian4.ItemView {
 };
 
 // src/import/import-modal.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/import/convert.ts
 function convertChatGptExport(raw) {
@@ -18067,7 +18487,7 @@ function yaml(s) {
 }
 
 // src/import/import-modal.ts
-var ChatGptImportModal = class extends import_obsidian5.Modal {
+var ChatGptImportModal = class extends import_obsidian6.Modal {
   constructor(app, defaultFolder) {
     super(app);
     this.file = null;
@@ -18084,19 +18504,19 @@ var ChatGptImportModal = class extends import_obsidian5.Modal {
     fileInput.addEventListener("change", () => {
       this.file = fileInput.files?.[0] ?? null;
     });
-    new import_obsidian5.Setting(contentEl).setName("Destination folder").setDesc("Folder in your vault where the notes are created.").addText((t) => t.setValue(this.folder).onChange((v) => this.folder = v.trim()));
+    new import_obsidian6.Setting(contentEl).setName("Destination folder").setDesc("Folder in your vault where the notes are created.").addText((t) => t.setValue(this.folder).onChange((v) => this.folder = v.trim()));
     const status = contentEl.createEl("p", { cls: "setting-item-description" });
-    new import_obsidian5.Setting(contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
+    new import_obsidian6.Setting(contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
       (b) => b.setButtonText("Import").setCta().onClick(async () => {
         if (!this.file) {
-          new import_obsidian5.Notice("Pick a conversations.json file first.");
+          new import_obsidian6.Notice("Pick a conversations.json file first.");
           return;
         }
         b.setDisabled(true);
         status.setText("Importing\u2026");
         try {
           const count = await this.run(this.file);
-          new import_obsidian5.Notice(`Imported ${count} conversation(s) into ${(0, import_obsidian5.normalizePath)(this.folder || "ChatGPT")}/`);
+          new import_obsidian6.Notice(`Imported ${count} conversation(s) into ${(0, import_obsidian6.normalizePath)(this.folder || "ChatGPT")}/`);
           this.close();
         } catch (err) {
           status.setText(`Import failed: ${err.message}`);
@@ -18108,15 +18528,15 @@ var ChatGptImportModal = class extends import_obsidian5.Modal {
   async run(file2) {
     const raw = JSON.parse(await file2.text());
     const notes = convertChatGptExport(raw);
-    const folder = (0, import_obsidian5.normalizePath)(this.folder || "ChatGPT");
+    const folder = (0, import_obsidian6.normalizePath)(this.folder || "ChatGPT");
     if (folder && folder !== "/" && !this.app.vault.getFolderByPath(folder)) {
       await this.app.vault.createFolder(folder).catch(() => void 0);
     }
     let written = 0;
     for (const note of notes) {
-      const path = (0, import_obsidian5.normalizePath)(`${folder}/${note.filename}`);
+      const path = (0, import_obsidian6.normalizePath)(`${folder}/${note.filename}`);
       const existing = this.app.vault.getFileByPath(path);
-      if (existing instanceof import_obsidian5.TFile) {
+      if (existing instanceof import_obsidian6.TFile) {
         await this.app.vault.process(existing, () => note.content);
       } else {
         await this.app.vault.create(path, note.content);
@@ -18130,11 +18550,236 @@ var ChatGptImportModal = class extends import_obsidian5.Modal {
   }
 };
 
+// src/vault/rag.ts
+var import_obsidian7 = require("obsidian");
+var CHUNK_CHARS = 1200;
+var CHUNK_OVERLAP = 150;
+var EMBED_BATCH = 16;
+var VaultIndex = class {
+  constructor(app, getSettings, persist) {
+    this.app = app;
+    this.getSettings = getSettings;
+    this.persist = persist;
+    this.data = null;
+    this.building = false;
+    this.progress = { done: 0, total: 0, phase: "idle" };
+    this.listeners = /* @__PURE__ */ new Set();
+  }
+  load(data) {
+    this.data = data && Array.isArray(data.chunks) ? data : null;
+  }
+  subscribe(fn) {
+    this.listeners.add(fn);
+    return () => void this.listeners.delete(fn);
+  }
+  emit() {
+    for (const fn of this.listeners) fn();
+  }
+  get status() {
+    return {
+      ready: !!this.data && this.data.chunks.length > 0,
+      chunkCount: this.data?.chunks.length ?? 0,
+      fileCount: this.data ? Object.keys(this.data.files).length : 0,
+      model: this.data?.model ?? null,
+      building: this.building,
+      progress: this.progress
+    };
+  }
+  embedder() {
+    const settings = this.getSettings();
+    const profile = settings.profiles.find((p) => p.id === settings.activeProfileId) ?? settings.profiles[0];
+    if (!profile) throw new Error("No agent is configured to provide embeddings.");
+    const provider = createEmbeddingProvider(profile, settings);
+    if (!provider) {
+      throw new Error(`The active agent (${profile.name}) cannot create embeddings. Switch to Ollama, OpenAI, or Gemini for vault search.`);
+    }
+    return provider;
+  }
+  /** Full rebuild from scratch. */
+  async rebuild(signal) {
+    if (this.building) throw new Error("An index build is already running.");
+    this.building = true;
+    this.progress = { done: 0, total: 0, phase: "scanning" };
+    this.emit();
+    try {
+      const provider = this.embedder();
+      const files = this.markdownFiles();
+      const pending = [];
+      for (const file2 of files) {
+        const body = await this.app.vault.cachedRead(file2);
+        for (const chunk of chunkNote(body)) {
+          pending.push({ path: file2.path, heading: chunk.heading, text: chunk.text });
+        }
+      }
+      this.progress = { done: 0, total: pending.length, phase: "embedding" };
+      this.emit();
+      const chunks = [];
+      for (let i = 0; i < pending.length; i += EMBED_BATCH) {
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+        const batch = pending.slice(i, i + EMBED_BATCH);
+        const vectors = await provider.embed(batch.map((b) => b.text), signal);
+        batch.forEach((b, j) => {
+          const vector = vectors[j];
+          if (vector) chunks.push({ ...b, vector });
+        });
+        this.progress = { done: Math.min(i + EMBED_BATCH, pending.length), total: pending.length, phase: "embedding" };
+        this.emit();
+      }
+      const fileMap = {};
+      for (const file2 of files) fileMap[file2.path] = file2.stat.mtime;
+      this.data = {
+        model: provider.model,
+        dim: chunks[0]?.vector.length ?? 0,
+        chunks,
+        files: fileMap
+      };
+      this.progress = { done: pending.length, total: pending.length, phase: "saving" };
+      this.emit();
+      await this.persist(this.data);
+    } finally {
+      this.building = false;
+      this.progress = { done: 0, total: 0, phase: "idle" };
+      this.emit();
+    }
+  }
+  /** Incremental update: re-embed only new/changed files, drop deleted ones. */
+  async refresh(signal) {
+    if (!this.data) {
+      await this.rebuild(signal);
+      return;
+    }
+    if (this.building) throw new Error("An index build is already running.");
+    this.building = true;
+    this.progress = { done: 0, total: 0, phase: "scanning" };
+    this.emit();
+    try {
+      const provider = this.embedder();
+      if (provider.model !== this.data.model) {
+        this.building = false;
+        await this.rebuild(signal);
+        return;
+      }
+      const files = this.markdownFiles();
+      const current = new Map(files.map((f) => [f.path, f]));
+      const changed = [];
+      for (const file2 of files) {
+        if (this.data.files[file2.path] !== file2.stat.mtime) changed.push(file2);
+      }
+      const deleted = Object.keys(this.data.files).filter((p) => !current.has(p));
+      const stale = /* @__PURE__ */ new Set([...changed.map((f) => f.path), ...deleted]);
+      let chunks = this.data.chunks.filter((c) => !stale.has(c.path));
+      const pending = [];
+      for (const file2 of changed) {
+        const body = await this.app.vault.cachedRead(file2);
+        for (const chunk of chunkNote(body)) {
+          pending.push({ path: file2.path, heading: chunk.heading, text: chunk.text });
+        }
+      }
+      this.progress = { done: 0, total: pending.length, phase: "embedding" };
+      this.emit();
+      for (let i = 0; i < pending.length; i += EMBED_BATCH) {
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+        const batch = pending.slice(i, i + EMBED_BATCH);
+        const vectors = await provider.embed(batch.map((b) => b.text), signal);
+        batch.forEach((b, j) => {
+          const vector = vectors[j];
+          if (vector) chunks.push({ ...b, vector });
+        });
+        this.progress = { done: Math.min(i + EMBED_BATCH, pending.length), total: pending.length, phase: "embedding" };
+        this.emit();
+      }
+      const fileMap = {};
+      for (const file2 of files) fileMap[file2.path] = file2.stat.mtime;
+      this.data = { model: provider.model, dim: chunks[0]?.vector.length ?? this.data.dim, chunks, files: fileMap };
+      this.progress = { done: pending.length, total: pending.length, phase: "saving" };
+      this.emit();
+      await this.persist(this.data);
+    } finally {
+      this.building = false;
+      this.progress = { done: 0, total: 0, phase: "idle" };
+      this.emit();
+    }
+  }
+  async clear() {
+    this.data = null;
+    await this.persist(null);
+    this.emit();
+  }
+  /** Top-k semantic search. Embeds the query, returns the closest chunks. */
+  async search(query, k, signal) {
+    if (!this.data || this.data.chunks.length === 0) {
+      throw new Error("The vault index is empty. Build it from the Cortex panel first.");
+    }
+    const provider = this.embedder();
+    const [queryVec] = await provider.embed([query], signal);
+    if (!queryVec) throw new Error("Could not embed the search query.");
+    const scored = this.data.chunks.map((c) => ({
+      path: c.path,
+      heading: c.heading,
+      text: c.text,
+      score: cosine(queryVec, c.vector)
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, k);
+  }
+  markdownFiles() {
+    const folder = this.getSettings().ragExcludeFolder.trim();
+    const exclude = folder ? (0, import_obsidian7.normalizePath)(folder) : "";
+    return this.app.vault.getMarkdownFiles().filter((f) => !exclude || !f.path.startsWith(`${exclude}/`));
+  }
+};
+function chunkNote(body) {
+  const stripped = body.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+  if (!stripped) return [];
+  const sections = [{ heading: "", lines: [] }];
+  for (const line of stripped.split(/\r?\n/)) {
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      sections.push({ heading: h[2]?.trim() ?? "", lines: [] });
+    } else {
+      sections[sections.length - 1].lines.push(line);
+    }
+  }
+  const out = [];
+  for (const section of sections) {
+    const text = section.lines.join("\n").trim();
+    if (!text) continue;
+    if (text.length <= CHUNK_CHARS) {
+      out.push({ heading: section.heading, text });
+      continue;
+    }
+    let start = 0;
+    while (start < text.length) {
+      const end = Math.min(text.length, start + CHUNK_CHARS);
+      out.push({ heading: section.heading, text: text.slice(start, end).trim() });
+      if (end >= text.length) break;
+      start = end - CHUNK_OVERLAP;
+    }
+  }
+  return out.filter((c) => c.text.length > 20);
+}
+function cosine(a, b) {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
 // src/main.ts
-var CortexPlugin = class extends import_obsidian6.Plugin {
+var INDEX_FILE = "cortex-index.json";
+var CortexPlugin = class extends import_obsidian8.Plugin {
   async onload() {
     await this.loadSettings();
-    this.engine = new CortexEngine(this.app, () => this.settings);
+    this.index = new VaultIndex(this.app, () => this.settings, (data) => this.saveIndex(data));
+    this.index.load(await this.loadIndex());
+    this.engine = new CortexEngine(this.app, () => this.settings, this.index);
     this.registerView(CORTEX_VIEW, (leaf) => new CortexView(leaf, this));
     this.addRibbonIcon("brain", "Open Cortex Local", () => void this.openPanel());
     this.addCommand({ id: "open", name: "Open Cortex Local", callback: () => void this.openPanel() });
@@ -18153,6 +18798,10 @@ var CortexPlugin = class extends import_obsidian6.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    if (!this.settings.apiKeys) this.settings.apiKeys = {};
+    if (typeof this.settings.ragTopK !== "number") this.settings.ragTopK = DEFAULT_SETTINGS.ragTopK;
+    if (typeof this.settings.ragUseInChat !== "boolean") this.settings.ragUseInChat = DEFAULT_SETTINGS.ragUseInChat;
+    if (typeof this.settings.ragExcludeFolder !== "string") this.settings.ragExcludeFolder = DEFAULT_SETTINGS.ragExcludeFolder;
     const legacyOllamaId = ["ollama", "team"].join("-");
     for (const profile of this.settings.profiles) {
       if (profile.id === legacyOllamaId) profile.id = "ollama-local";
@@ -18168,6 +18817,26 @@ var CortexPlugin = class extends import_obsidian6.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  indexPath() {
+    return `${this.manifest.dir}/${INDEX_FILE}`;
+  }
+  async loadIndex() {
+    try {
+      const path = this.indexPath();
+      if (!await this.app.vault.adapter.exists(path)) return null;
+      return JSON.parse(await this.app.vault.adapter.read(path));
+    } catch {
+      return null;
+    }
+  }
+  async saveIndex(data) {
+    const path = this.indexPath();
+    if (!data) {
+      if (await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.remove(path);
+      return;
+    }
+    await this.app.vault.adapter.write(path, JSON.stringify(data));
   }
   activeProfile() {
     const found = this.settings.profiles.find((p) => p.id === this.settings.activeProfileId);
