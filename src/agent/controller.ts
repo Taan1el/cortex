@@ -9,6 +9,7 @@ import type { ConnectionStatus, EngineState, PanelItem, ToolStatus } from "../ty
 import type { AgentProfile, CortexSettings } from "../settings";
 import { VaultFiles } from "../vault/files";
 import type { VaultIndex } from "../vault/rag";
+import { webSearch, looksLikeWebQuery, formatWebContext } from "../vault/websearch";
 import { createChatProvider } from "../providers";
 import type { ChatMessage, ChatProvider } from "../providers/types";
 
@@ -169,6 +170,8 @@ export class CortexEngine {
 		}
 		const context = await this.buildContext(settings);
 		if (context) blocks.push({ type: "text", text: context });
+		const web = await this.retrieveWebContext(text, settings);
+		if (web) blocks.push({ type: "text", text: web });
 		blocks.push({ type: "text", text });
 
 		try {
@@ -199,6 +202,8 @@ export class CortexEngine {
 			const retrieved = await this.retrieveVaultContext(text, settings);
 			const contextParts = [context ?? "No extra context."];
 			if (retrieved) contextParts.push("", retrieved);
+			const web = await this.retrieveWebContext(text, settings);
+			if (web) contextParts.push("", web);
 			const messages: ChatMessage[] = [
 				{ role: "system", content: "You are Cortex, a local Obsidian assistant. Answer simply and directly. Keep replies short unless the user asks for detail. When relevant vault notes are provided, ground your answer in them and cite note paths." },
 				{ role: "user", content: ["User request:", text, "", "Vault context:", ...contextParts].join("\n") },
@@ -289,6 +294,40 @@ export class CortexEngine {
 		} catch (err) {
 			tool.status = "failed";
 			tool.title = `Vault search failed: ${(err as Error).message}`;
+			this.emit();
+			return null;
+		}
+	}
+
+	/** Run a web search when the message looks like a factual lookup; format hits as context. */
+	private async retrieveWebContext(query: string, settings: CortexSettings): Promise<string | null> {
+		if (!settings.webSearchEnabled || !looksLikeWebQuery(query)) return null;
+		const tool: Extract<PanelItem, { kind: "tool" }> = {
+			kind: "tool",
+			id: rid(),
+			callId: rid(),
+			title: "Searching the web",
+			status: "running",
+			locations: [],
+		};
+		this.items.push(tool);
+		this.emit();
+		try {
+			const results = await webSearch(query, settings.webSearchMaxResults);
+			if (results.length === 0) {
+				tool.status = "done";
+				tool.title = "Web search · no results";
+				this.emit();
+				return null;
+			}
+			tool.status = "done";
+			tool.title = `Searched the web · ${results.length} results`;
+			tool.locations = results.map((r) => r.url);
+			this.emit();
+			return formatWebContext(query, results);
+		} catch (err) {
+			tool.status = "failed";
+			tool.title = `Web search failed: ${(err as Error).message}`;
 			this.emit();
 			return null;
 		}

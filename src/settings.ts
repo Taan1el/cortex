@@ -38,6 +38,8 @@ export interface CortexSettings {
 	ragUseInChat: boolean;
 	ragTopK: number;
 	ragExcludeFolder: string;
+	webSearchEnabled: boolean;
+	webSearchMaxResults: number;
 }
 
 export const CLOUD_DEFAULT_MODELS: Record<string, string> = {
@@ -93,6 +95,8 @@ export const DEFAULT_SETTINGS: CortexSettings = {
 	ragUseInChat: false,
 	ragTopK: 5,
 	ragExcludeFolder: "",
+	webSearchEnabled: false,
+	webSearchMaxResults: 5,
 };
 
 function isCloudProvider(kind: ProviderKind | undefined): boolean {
@@ -145,6 +149,16 @@ export class CortexSettingTab extends PluginSettingTab {
 		for (const profile of this.plugin.settings.profiles) this.renderProfile(containerEl, profile);
 
 		this.renderVaultSearch(containerEl);
+
+		new Setting(containerEl).setName("Web search").setHeading();
+		new Setting(containerEl)
+			.setName("Enable web search")
+			.setDesc("When a question looks like a factual lookup (latest, current, who/what/when…), search the web via DuckDuckGo and feed results to the assistant. Works with every agent.")
+			.addToggle((t) => t.setValue(this.plugin.settings.webSearchEnabled).onChange(async (v) => { this.plugin.settings.webSearchEnabled = v; await this.save(); }));
+		new Setting(containerEl)
+			.setName("Results to fetch")
+			.setDesc("How many web results to pull in per search.")
+			.addSlider((s) => s.setLimits(1, 10, 1).setValue(this.plugin.settings.webSearchMaxResults).setDynamicTooltip().onChange(async (v) => { this.plugin.settings.webSearchMaxResults = v; await this.save(); }));
 
 		new Setting(containerEl).setName("Notes & permissions").setHeading();
 

@@ -45,6 +45,8 @@ export default class CortexPlugin extends Plugin {
 		if (typeof this.settings.ragTopK !== "number") this.settings.ragTopK = DEFAULT_SETTINGS.ragTopK;
 		if (typeof this.settings.ragUseInChat !== "boolean") this.settings.ragUseInChat = DEFAULT_SETTINGS.ragUseInChat;
 		if (typeof this.settings.ragExcludeFolder !== "string") this.settings.ragExcludeFolder = DEFAULT_SETTINGS.ragExcludeFolder;
+		if (typeof this.settings.webSearchEnabled !== "boolean") this.settings.webSearchEnabled = DEFAULT_SETTINGS.webSearchEnabled;
+		if (typeof this.settings.webSearchMaxResults !== "number") this.settings.webSearchMaxResults = DEFAULT_SETTINGS.webSearchMaxResults;
 		const legacyOllamaId = ["ollama", "team"].join("-");
 		for (const profile of this.settings.profiles) {
 			if (profile.id === legacyOllamaId) profile.id = "ollama-local";
