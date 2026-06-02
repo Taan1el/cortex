@@ -1,4 +1,6 @@
 import { requestUrl } from "obsidian";
+import { spawn } from "node:child_process";
+import process from "node:process";
 
 import type { ChatMessage, ChatOptions, ChatProvider, EmbeddingProvider, ProviderContext } from "./types";
 import { openStream, readLines } from "./http";
@@ -20,11 +22,49 @@ export class OllamaProvider implements ChatProvider, EmbeddingProvider {
 	}
 
 	async ready(): Promise<void> {
+		if (await this.ping()) return;
+		// Not running — try to start `ollama serve` ourselves, then wait for it.
+		const started = await this.tryAutoStart();
+		if (started && (await this.waitForServer(8000))) return;
 		try {
 			await requestUrl({ url: `${this.baseUrl}/api/tags`, method: "GET" });
 		} catch (err) {
 			throw new Error(ollamaError(err));
 		}
+	}
+
+	private async ping(): Promise<boolean> {
+		try {
+			await requestUrl({ url: `${this.baseUrl}/api/tags`, method: "GET" });
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** Only auto-start a local Ollama. Remote hosts are the user's responsibility. */
+	private async tryAutoStart(): Promise<boolean> {
+		if (!isLocalUrl(this.baseUrl)) return false;
+		try {
+			const child = spawn("ollama", ["serve"], {
+				detached: true,
+				stdio: "ignore",
+				env: { ...process.env },
+			});
+			child.unref();
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private async waitForServer(timeoutMs: number): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			await delay(400);
+			if (await this.ping()) return true;
+		}
+		return false;
 	}
 
 	async stream(messages: ChatMessage[], opts: ChatOptions, onChunk: (delta: string) => void): Promise<string> {
@@ -73,6 +113,19 @@ export class OllamaProvider implements ChatProvider, EmbeddingProvider {
 
 export function cleanBaseUrl(value: string | undefined): string {
 	return (value?.trim() || "http://127.0.0.1:11434").replace(/\/+$/, "");
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLocalUrl(url: string): boolean {
+	try {
+		const host = new URL(url).hostname;
+		return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "0.0.0.0";
+	} catch {
+		return false;
+	}
 }
 
 export function ollamaError(err: unknown): string {
