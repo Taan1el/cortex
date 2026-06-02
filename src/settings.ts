@@ -38,6 +38,8 @@ export interface CortexSettings {
 	ragUseInChat: boolean;
 	ragTopK: number;
 	ragExcludeFolder: string;
+	autocompleteEnabled: boolean;
+	autocompleteDebounceMs: number;
 	webSearchEnabled: boolean;
 	webSearchMaxResults: number;
 }
@@ -95,6 +97,8 @@ export const DEFAULT_SETTINGS: CortexSettings = {
 	ragUseInChat: false,
 	ragTopK: 5,
 	ragExcludeFolder: "",
+	autocompleteEnabled: false,
+	autocompleteDebounceMs: 500,
 	webSearchEnabled: false,
 	webSearchMaxResults: 5,
 };
@@ -149,6 +153,16 @@ export class CortexSettingTab extends PluginSettingTab {
 		for (const profile of this.plugin.settings.profiles) this.renderProfile(containerEl, profile);
 
 		this.renderVaultSearch(containerEl);
+
+		new Setting(containerEl).setName("Inline autocomplete").setHeading();
+		new Setting(containerEl)
+			.setName("Enable inline autocomplete")
+			.setDesc("As you type, suggest a continuation in grey ghost text. Press Tab to accept, Esc to dismiss. Uses the active chat agent (Ollama, OpenAI, Anthropic, or Gemini — not ACP agents).")
+			.addToggle((t) => t.setValue(this.plugin.settings.autocompleteEnabled).onChange(async (v) => { this.plugin.settings.autocompleteEnabled = v; await this.save(); }));
+		new Setting(containerEl)
+			.setName("Suggestion delay")
+			.setDesc("How long to wait after you stop typing before asking for a suggestion (milliseconds).")
+			.addSlider((s) => s.setLimits(200, 2000, 100).setValue(this.plugin.settings.autocompleteDebounceMs).setDynamicTooltip().onChange(async (v) => { this.plugin.settings.autocompleteDebounceMs = v; await this.save(); }));
 
 		new Setting(containerEl).setName("Web search").setHeading();
 		new Setting(containerEl)

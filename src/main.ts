@@ -1,10 +1,11 @@
-import { Plugin, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 
 import { CortexSettingTab, DEFAULT_SETTINGS, type AgentProfile, type CortexSettings } from "./settings";
 import { CortexEngine } from "./agent/controller";
 import { CortexView, CORTEX_VIEW } from "./view/panel";
 import { ChatGptImportModal } from "./import/import-modal";
 import { VaultIndex, type RagIndexData } from "./vault/rag";
+import { cortexAutocomplete } from "./editor/autocomplete";
 
 const INDEX_FILE = "cortex-index.json";
 
@@ -32,7 +33,26 @@ export default class CortexPlugin extends Plugin {
 			callback: () => new ChatGptImportModal(this.app, this.settings.importFolder).open(),
 		});
 
+		this.registerEditorExtension(
+			cortexAutocomplete(
+				() => this.settings,
+				(prefix, suffix, signal) => this.engine.complete(prefix, suffix, signal),
+			),
+		);
+
+		this.addCommand({
+			id: "toggle-autocomplete",
+			name: "Toggle inline autocomplete",
+			callback: () => void this.toggleAutocomplete(),
+		});
+
 		this.addSettingTab(new CortexSettingTab(this.app, this));
+	}
+
+	async toggleAutocomplete(): Promise<void> {
+		this.settings.autocompleteEnabled = !this.settings.autocompleteEnabled;
+		await this.saveSettings();
+		new Notice(`Cortex autocomplete ${this.settings.autocompleteEnabled ? "on" : "off"}.`);
 	}
 
 	onunload(): void {
@@ -45,6 +65,8 @@ export default class CortexPlugin extends Plugin {
 		if (typeof this.settings.ragTopK !== "number") this.settings.ragTopK = DEFAULT_SETTINGS.ragTopK;
 		if (typeof this.settings.ragUseInChat !== "boolean") this.settings.ragUseInChat = DEFAULT_SETTINGS.ragUseInChat;
 		if (typeof this.settings.ragExcludeFolder !== "string") this.settings.ragExcludeFolder = DEFAULT_SETTINGS.ragExcludeFolder;
+		if (typeof this.settings.autocompleteEnabled !== "boolean") this.settings.autocompleteEnabled = DEFAULT_SETTINGS.autocompleteEnabled;
+		if (typeof this.settings.autocompleteDebounceMs !== "number") this.settings.autocompleteDebounceMs = DEFAULT_SETTINGS.autocompleteDebounceMs;
 		if (typeof this.settings.webSearchEnabled !== "boolean") this.settings.webSearchEnabled = DEFAULT_SETTINGS.webSearchEnabled;
 		if (typeof this.settings.webSearchMaxResults !== "number") this.settings.webSearchMaxResults = DEFAULT_SETTINGS.webSearchMaxResults;
 		const legacyOllamaId = ["ollama", "team"].join("-");

@@ -352,6 +352,41 @@ export class CortexEngine {
 		});
 	}
 
+	/**
+	 * One-shot, non-streaming completion for inline editor ghost text.
+	 * Uses the active chat provider only; ACP agents are skipped (returns "").
+	 */
+	async complete(prefix: string, suffix: string, signal: AbortSignal): Promise<string> {
+		const profile = this.activeProfile;
+		if (!profile || (profile.provider ?? "acp") === "acp") return "";
+		let provider = this.chatProvider;
+		if (!provider) {
+			try {
+				provider = createChatProvider(profile, this.getSettings());
+				await provider.ready();
+			} catch {
+				return "";
+			}
+		}
+		const messages: ChatMessage[] = [
+			{
+				role: "system",
+				content: "You are an inline writing autocomplete inside a Markdown editor. Continue the user's text naturally from where the cursor is. Output ONLY the continuation — no preamble, no quotes, no code fences, no repetition of the existing text. Keep it short: finish the current thought (a phrase, sentence, or at most a few lines).",
+			},
+			{
+				role: "user",
+				content: suffix.trim()
+					? `Text before cursor:\n${prefix}\n\nText after cursor:\n${suffix}\n\nProvide only the text that should be inserted at the cursor.`
+					: `Continue this text. Output only the continuation:\n\n${prefix}`,
+			},
+		];
+		try {
+			return await provider.stream(messages, { signal, effort: "minimal" }, () => undefined);
+		} catch {
+			return "";
+		}
+	}
+
 	async cancel(): Promise<void> {
 		if (this.abort) {
 			this.abort.abort();
