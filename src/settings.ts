@@ -64,7 +64,7 @@ export const PROFILE_TEMPLATES: Record<string, Omit<AgentProfile, "id" | "env">>
 	"gemini-api": { name: "Google Gemini", provider: "gemini", command: "", args: [], model: "gemini-2.0-flash" },
 	"claude-code": { name: "Claude Code", provider: "acp", command: "npx", args: ["-y", "@zed-industries/claude-code-acp"] },
 	codex: { name: "OpenAI Codex", provider: "acp", command: "npx", args: ["-y", "@zed-industries/codex-acp"] },
-	gemini: { name: "Gemini CLI", provider: "acp", command: "npx", args: ["-y", "@google/gemini-cli", "--experimental-acp"] },
+	gemini: { name: "Gemini CLI", provider: "acp", command: "npx", args: ["-y", "@google/gemini-cli", "--acp", "--skip-trust"] },
 	custom: { name: "Custom ACP agent", provider: "acp", command: "", args: [] },
 };
 
