@@ -20,7 +20,7 @@ export class AnthropicProvider implements ChatProvider {
 	}
 
 	async ready(): Promise<void> {
-		if (!this.apiKey) throw new Error("Add your Anthropic API key in Cortex settings.");
+		if (!this.apiKey) throw new Error("Set ANTHROPIC_API_KEY in your operating system environment.");
 	}
 
 	async stream(messages: ChatMessage[], opts: ChatOptions, onChunk: (delta: string) => void): Promise<string> {

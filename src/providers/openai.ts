@@ -18,7 +18,7 @@ export class OpenAiProvider implements ChatProvider, EmbeddingProvider {
 	}
 
 	async ready(): Promise<void> {
-		if (!this.apiKey) throw new Error("Add your OpenAI API key in Cortex settings.");
+		if (!this.apiKey) throw new Error("Set OPENAI_API_KEY in your operating system environment.");
 	}
 
 	async stream(messages: ChatMessage[], opts: ChatOptions, onChunk: (delta: string) => void): Promise<string> {

@@ -95,6 +95,10 @@ export const DEFAULT_SETTINGS: CortexSettings = {
 	ragExcludeFolder: "",
 };
 
+function isCloudProvider(kind: ProviderKind | undefined): boolean {
+	return kind === "openai" || kind === "anthropic" || kind === "gemini";
+}
+
 export class CortexSettingTab extends PluginSettingTab {
 	constructor(app: App, private plugin: CortexPlugin) {
 		super(app, plugin);
@@ -284,6 +288,28 @@ export class CortexSettingTab extends PluginSettingTab {
 					profile.ollamaModel = v.trim() || "llama3.2:latest";
 					await this.save();
 				}));
+		} else if (isCloudProvider(profile.provider)) {
+			const kind = profile.provider as string;
+			const defaultModel = CLOUD_DEFAULT_MODELS[kind] ?? "";
+			new Setting(wrap)
+				.setName("Model")
+				.setDesc(`Model name for ${profile.name}. Default: ${defaultModel}.`)
+				.addText((t) => t.setValue(profile.model ?? defaultModel).onChange(async (v) => {
+					profile.model = v.trim() || defaultModel;
+					await this.save();
+				}));
+			new Setting(wrap)
+				.setName("API key")
+				.setDesc("Stored locally in this vault's plugin data. Shared by all profiles of this provider.")
+				.addText((t) => {
+					t.inputEl.type = "password";
+					t.setPlaceholder("sk-...")
+						.setValue(this.plugin.settings.apiKeys[kind] ?? "")
+						.onChange(async (v) => {
+							this.plugin.settings.apiKeys[kind] = v.trim();
+							await this.save();
+						});
+				});
 		} else {
 			new Setting(wrap).setName("Command").addText((t) => t.setValue(profile.command).onChange(async (v) => { profile.command = v; await this.save(); }));
 			new Setting(wrap).setName("Arguments").setDesc("Space-separated.").addText((t) => t.setValue(profile.args.join(" ")).onChange(async (v) => { profile.args = v.split(/\s+/).filter(Boolean); await this.save(); }));

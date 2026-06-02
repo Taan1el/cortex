@@ -19,7 +19,7 @@ export class GeminiProvider implements ChatProvider, EmbeddingProvider {
 	}
 
 	async ready(): Promise<void> {
-		if (!this.apiKey) throw new Error("Add your Google Gemini API key in Cortex settings.");
+		if (!this.apiKey) throw new Error("Set GEMINI_API_KEY or GOOGLE_API_KEY in your operating system environment.");
 	}
 
 	async stream(messages: ChatMessage[], opts: ChatOptions, onChunk: (delta: string) => void): Promise<string> {
