@@ -61,6 +61,7 @@ export default class CortexPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<CortexSettings>);
+		let settingsChanged = false;
 		if (!this.settings.apiKeys) this.settings.apiKeys = {};
 		if (typeof this.settings.ragTopK !== "number") this.settings.ragTopK = DEFAULT_SETTINGS.ragTopK;
 		if (typeof this.settings.ragUseInChat !== "boolean") this.settings.ragUseInChat = DEFAULT_SETTINGS.ragUseInChat;
@@ -72,6 +73,14 @@ export default class CortexPlugin extends Plugin {
 		const legacyOllamaId = ["ollama", "team"].join("-");
 		for (const profile of this.settings.profiles) {
 			if (profile.id === legacyOllamaId) profile.id = "ollama-local";
+			if (
+				profile.command === "npx" &&
+				profile.args.includes("@google/gemini-cli") &&
+				profile.args.includes("--skip-trust")
+			) {
+				profile.args = profile.args.filter((arg) => arg !== "--skip-trust");
+				settingsChanged = true;
+			}
 		}
 		if (this.settings.activeProfileId === legacyOllamaId) {
 			this.settings.activeProfileId = "ollama-local";
@@ -81,6 +90,7 @@ export default class CortexPlugin extends Plugin {
 				this.settings.profiles.push(JSON.parse(JSON.stringify(profile)) as AgentProfile);
 			}
 		}
+		if (settingsChanged) await this.saveSettings();
 	}
 
 	async saveSettings(): Promise<void> {

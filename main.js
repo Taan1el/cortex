@@ -58,7 +58,7 @@ var PROFILE_TEMPLATES = {
   "gemini-api": { name: "Google Gemini", provider: "gemini", command: "", args: [], model: "gemini-2.0-flash" },
   "claude-code": { name: "Claude Code", provider: "acp", command: "npx", args: ["-y", "@zed-industries/claude-code-acp"] },
   codex: { name: "OpenAI Codex", provider: "acp", command: "npx", args: ["-y", "@zed-industries/codex-acp"] },
-  gemini: { name: "Gemini CLI", provider: "acp", command: "npx", args: ["-y", "@google/gemini-cli", "--acp", "--skip-trust"] },
+  gemini: { name: "Gemini CLI", provider: "acp", command: "npx", args: ["-y", "@google/gemini-cli", "--acp"] },
   custom: { name: "Custom ACP agent", provider: "acp", command: "", args: [] }
 };
 var DEFAULT_SETTINGS = {
@@ -19207,6 +19207,7 @@ var CortexPlugin = class extends import_obsidian9.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    let settingsChanged = false;
     if (!this.settings.apiKeys) this.settings.apiKeys = {};
     if (typeof this.settings.ragTopK !== "number") this.settings.ragTopK = DEFAULT_SETTINGS.ragTopK;
     if (typeof this.settings.ragUseInChat !== "boolean") this.settings.ragUseInChat = DEFAULT_SETTINGS.ragUseInChat;
@@ -19218,6 +19219,10 @@ var CortexPlugin = class extends import_obsidian9.Plugin {
     const legacyOllamaId = ["ollama", "team"].join("-");
     for (const profile of this.settings.profiles) {
       if (profile.id === legacyOllamaId) profile.id = "ollama-local";
+      if (profile.command === "npx" && profile.args.includes("@google/gemini-cli") && profile.args.includes("--skip-trust")) {
+        profile.args = profile.args.filter((arg) => arg !== "--skip-trust");
+        settingsChanged = true;
+      }
     }
     if (this.settings.activeProfileId === legacyOllamaId) {
       this.settings.activeProfileId = "ollama-local";
@@ -19227,6 +19232,7 @@ var CortexPlugin = class extends import_obsidian9.Plugin {
         this.settings.profiles.push(JSON.parse(JSON.stringify(profile)));
       }
     }
+    if (settingsChanged) await this.saveSettings();
   }
   async saveSettings() {
     await this.saveData(this.settings);
